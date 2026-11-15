@@ -1,1 +1,36 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Виртуальное окружение ---
+.venv/
+venv/
+env/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- MLflow ---
+mlruns/
+mlflow.db
+*.db
+.cache/
+
+# --- Твои локальные папки (данные и артефакты) ---
 data/
+outputs/
+logs/
+notebooks/.ipynb_checkpoints/
+
+# --- Тестовые и временные артефакты ---
+catboost_info/
+*.log
+.DS_Store

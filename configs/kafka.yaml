@@ -1,0 +1,7 @@
+producer:
+  bootstrap.servers: "localhost:9092"
+  client.id: "rig-telemetry-simulator"
+  acks: "all"           # гарантия доставки
+  retries: 3
+  linger.ms: 10         # батчинг
+  compression.type: "snappy"

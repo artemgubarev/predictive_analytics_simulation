@@ -1,0 +1,57 @@
+experiment_name: "pdm_pipeline"
+tracking_uri: "sqlite:///mlflow.db"
+
+preprocess:
+  telemetry_path: "data/splited/main/telemetry.csv"
+  failures_path: "data/splited/main/failures.csv"
+
+features:
+  window_short: 3
+  window_long: 24
+  lead_time_min: 1
+  lead_time_max: 24
+  nan_drop_threshold: 0.3
+
+train:
+  model_types: [catboost]
+  #model_type: xgboost
+  n_splits: 5
+  random_state: 42
+  early_stopping_rounds: 100
+
+  # общие для всех моделей, если модель не переопределяет
+  common:
+    learning_rate: 0.05
+    n_estimators: 2000
+    depth: 6
+    l2_leaf_reg: 3
+
+  # специфичные параметры — переопределяют common
+  catboost:
+    eval_metric: PRAUC
+    thread_count: -1
+    verbose: false
+
+  xgboost:
+    objective: binary:logistic
+    eval_metric: aucpr
+    tree_method: hist
+    n_jobs: -1
+
+  lightgbm:
+    objective: binary
+    metric: average_precision
+    num_leaves: 31
+
+  logreg:
+    C: 1.0
+    max_iter: 2000
+    solver: lbfgs
+
+evaluate:
+  metrics_path: "metrics.json"
+  threshold: 0.5
+
+pipeline:
+  test_size: 0.2
+  split_seed: 42
