@@ -1,55 +1,73 @@
+from __future__ import annotations
 import logging
 import pandas as pd
-from pathlib import Path
+
 from src.features.v1 import EquipmentFeatureBuilderV1
+from src.features.v2 import EquipmentFeatureBuilderV2
+from src.features.v3 import EquipmentFeatureBuilderV3
+from src.features.v4 import EquipmentFeatureBuilderV4
+from src.features.raw_builder import EquipmentFeatureBuilderRaw
 
 logger = logging.getLogger(__name__)
 
-def load_data(telemetry_path: str, failures_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Загружает телеметрию и отказы из файлов (CSV или Parquet)."""
+def _load_data(telemetry_path: str, failures_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Вспомогательная функция для загрузки данных (пример)."""
+    logger.info("Загрузка телеметрии: %s", telemetry_path)
+    df_tel = pd.read_csv(telemetry_path)  # или pd.read_parquet, если у тебя parquet
     
-    logger.info("Loading telemetry: %s", telemetry_path)
-    logger.info("Loading failures: %s", failures_path)
+    logger.info("Загрузка отказов: %s", failures_path)
+    df_fail = pd.read_csv(failures_path)
     
-    def _read(path: str) -> pd.DataFrame:
-        if path.endswith(".parquet"):
-            return pd.read_parquet(path)
-        elif path.endswith(".csv"):
-            return pd.read_csv(path)
-        else:
-            raise ValueError(f"Неподдерживаемый формат файла: {path}")
-
-    df_telemetry = _read(telemetry_path)
-    df_failures = _read(failures_path)
-    
-    logger.info("Телеметрия: %d строк, Отказы: %d строк", len(df_telemetry), len(df_failures))
-    
-    return df_telemetry, df_failures
+    return df_tel, df_fail
 
 
 def preprocess(config: dict) -> pd.DataFrame:
-    """Data preprocessing"""
-    
+    """
+    Главная функция препроцессинга.
+    Загружает данные, выбирает версию фичей из конфига и генерирует датасет.
+    """
     logger.info("=== Preprocess started ===")
     
-    cfg_data = config["preprocess"]
-    cfg_features = config["features"]
+    # 1. Достаем пути и параметры из конфига
+    cfg = config["preprocess"]
+    tel_path = cfg["telemetry_path"]
+    fail_path = cfg["failures_path"]
     
-    df_telemetry, df_failures = load_data(
-        telemetry_path=cfg_data["telemetry_path"],
-        failures_path=cfg_data["failures_path"],
-    )
+    # 2. Загружаем сырые данные
+    df_tel, df_fail = _load_data(tel_path, fail_path)
     
-    builder = EquipmentFeatureBuilderV1(
-        window_short=cfg_features["window_short"],
-        window_long=cfg_features["window_long"],
-        lead_time_min=cfg_features["lead_time_min"],
-        lead_time_max=cfg_features["lead_time_max"],
-        nan_drop_threshold=cfg_features["nan_drop_threshold"],
-    )
+    # 3. Выбираем версию фичей (по умолчанию v1)
+    feature_version = cfg.get("feature_version", "v1").lower()
+    logger.info("Используемая версия фичей: %s", feature_version)
     
+    # 4. Собираем параметры для билдера (окна и т.д.)
+    # Если в конфиге есть секция builder_params, берем оттуда, иначе дефолты
+    builder_kwargs = cfg.get("builder_params", {})
+    
+    # 5. Создаем нужный билдер
+    if feature_version == "v1":
+        builder = EquipmentFeatureBuilderV1(**builder_kwargs)
+    elif feature_version == "v2":
+        builder = EquipmentFeatureBuilderV2(**builder_kwargs)
+    elif feature_version == "v3":
+        valid_keys = {"lead_time_min", "lead_time_max", "scaler_type"}
+        clean_kwargs = {k: v for k, v in builder_kwargs.items() if k in valid_keys}
+        builder = EquipmentFeatureBuilderV3(**clean_kwargs)
+    elif feature_version == "v4":
+        valid_keys = {"lead_time_min", "lead_time_max", "scaler_type"}
+        clean_kwargs = {k: v for k, v in builder_kwargs.items() if k in valid_keys}
+        builder = EquipmentFeatureBuilderV4(**clean_kwargs)
+    elif feature_version == "raw":
+        builder = EquipmentFeatureBuilderRaw(
+            lead_time_min=builder_kwargs.get("lead_time_min", 1),
+            lead_time_max=builder_kwargs.get("lead_time_max", 24),
+            scaler_type=builder_kwargs.get("scaler_type", "standard"))
+    else:
+        raise ValueError(f"Неизвестная версия фичей: {feature_version}. Ожидается 'v1' или 'v2'.")
+        
+    # 6. Генерируем датасет
     logger.info("Генерация фичей...")
-    df_features = builder.prepare_dataset(df_telemetry, df_failures)
-    logger.info("Фичи готовы. Итоговая форма: %s", df_features.shape)
+    df_features = builder.prepare_dataset(df_tel, df_fail)
     
+    logger.info("=== Preprocess finished ===")
     return df_features

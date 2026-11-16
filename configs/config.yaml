@@ -1,32 +1,42 @@
-experiment_name: "pdm_pipeline"
-tracking_uri: "sqlite:///mlflow.db"
+experiment_name: pdm_pipeline
+tracking_uri: sqlite:////raid/agubarev/predictive_analytics_simulation/mlflow.db
 
 preprocess:
-  telemetry_path: "data/splited/main/telemetry.csv"
-  failures_path: "data/splited/main/failures.csv"
-
-features:
-  window_short: 3
-  window_long: 24
-  lead_time_min: 1
-  lead_time_max: 24
-  nan_drop_threshold: 0.3
+  telemetry_path: /raid/agubarev/predictive_analytics_simulation/data/splited/main/telemetry.csv
+  failures_path: /raid/agubarev/predictive_analytics_simulation/data/splited/main/failures.csv
+  feature_version: v4
+  
+  builder_params:
+    lead_time_min: 1
+    lead_time_max: 24
+    window_short: 3
+    window_long: 24
+    nan_drop_threshold: 0.3
+    scaler_type: robust
 
 train:
-  model_types: [catboost]
-  #model_type: xgboost
-  n_splits: 5
-  random_state: 42
-  early_stopping_rounds: 100
+  model_types:
+    - lstm
+  n_trials: 1
+  n_splits: 3
+  random_state: 34
+  
+  lstm:
+    seq_length: 128
+    hidden_size: 64
+    num_layers: 2
+    batch_size: 1024
+    epochs: 20
+    learning_rate: 0.002
+    max_pos_weight: 2.0
+    patience: 3
 
-  # общие для всех моделей, если модель не переопределяет
   common:
     learning_rate: 0.05
     n_estimators: 2000
     depth: 6
     l2_leaf_reg: 3
 
-  # специфичные параметры — переопределяют common
   catboost:
     eval_metric: PRAUC
     thread_count: -1
@@ -49,7 +59,7 @@ train:
     solver: lbfgs
 
 evaluate:
-  metrics_path: "metrics.json"
+  metrics_path: metrics.json
   threshold: 0.5
 
 pipeline:

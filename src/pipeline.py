@@ -14,14 +14,14 @@ import yaml
 from sklearn.model_selection import GroupShuffleSplit
 
 from src.preprocess import preprocess
-from src.train import train
-from src.evaluate import evaluate
-
+from src.evaluate import evaluate, evaluate_lstm
+from src.train_lstm import train_lstm
 from src.train_optuna import train_optuna
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
 
 def load_config(path: Path) -> dict:
     if not path.exists():
@@ -39,7 +39,6 @@ def setup_logging(path: Path) -> None:
 
 
 def resolve_path(path_str: str) -> str:
-    """Делает путь абсолютным относительно корня проекта (BASE_DIR)."""
     p = Path(path_str)
     if not p.is_absolute():
         p = (BASE_DIR / p).resolve()
@@ -47,15 +46,9 @@ def resolve_path(path_str: str) -> str:
 
 
 def resolve_tracking_uri(uri: str) -> str:
-    """
-    Превращает относительный sqlite:///mlflow.db в абсолютный,
-    чтобы UI и пайплайн всегда смотрели на один и тот же файл
-    независимо от CWD.
-    """
     if uri.startswith("sqlite:///") and not uri.startswith("sqlite:////"):
         db_path = uri.replace("sqlite:///", "", 1)
         abs_path = (BASE_DIR / db_path).resolve()
-        # Создаём папку, если её нет
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{abs_path}"
     return uri
@@ -63,33 +56,12 @@ def resolve_tracking_uri(uri: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PdM MLflow pipeline")
-    parser.add_argument(
-        "--config",
-        default=os.environ.get(
-            "PIPELINE_CONFIG",
-            str(BASE_DIR / "configs" / "config.yaml"),
-        ),
-        help="Path to pipeline config (env: PIPELINE_CONFIG)",
-    )
-    parser.add_argument(
-        "--logging",
-        default=os.environ.get(
-            "PIPELINE_LOGGING",
-            str(BASE_DIR / "configs" / "logging.yaml"),
-        ),
-        help="Path to logging config (env: PIPELINE_LOGGING)",
-    )
-    parser.add_argument(
-        "--experiment",
-        default=os.environ.get("MLFLOW_EXPERIMENT"),
-        help="Override experiment_name (env: MLFLOW_EXPERIMENT)",
-    )
-    parser.add_argument(
-        "--tracking-uri",
-        default=os.environ.get("MLFLOW_TRACKING_URI"),
-        help="Override tracking_uri (env: MLFLOW_TRACKING_URI)",
-    )
+    parser.add_argument("--config", default=os.environ.get("PIPELINE_CONFIG", str(BASE_DIR / "configs" / "config.yaml")))
+    parser.add_argument("--logging", default=os.environ.get("PIPELINE_LOGGING", str(BASE_DIR / "configs" / "logging.yaml")))
+    parser.add_argument("--experiment", default=os.environ.get("MLFLOW_EXPERIMENT"))
+    parser.add_argument("--tracking-uri", default=os.environ.get("MLFLOW_TRACKING_URI"))
     return parser.parse_args()
+
 
 def run_pipeline(
     config_path: Path,
@@ -98,18 +70,15 @@ def run_pipeline(
 ) -> None:
     cfg = load_config(config_path)
 
-    # --- Overrides ---
     if experiment_override:
         cfg["experiment_name"] = experiment_override
     if tracking_uri_override:
         cfg["tracking_uri"] = tracking_uri_override
 
-    # --- Резолв путей ---
     cfg["tracking_uri"] = resolve_tracking_uri(cfg["tracking_uri"])
     cfg["preprocess"]["telemetry_path"] = resolve_path(cfg["preprocess"]["telemetry_path"])
     cfg["preprocess"]["failures_path"] = resolve_path(cfg["preprocess"]["failures_path"])
 
-    # --- MLflow setup ---
     mlflow.set_tracking_uri(cfg["tracking_uri"])
     mlflow.set_experiment(cfg["experiment_name"])
 
@@ -117,36 +86,24 @@ def run_pipeline(
     logger.info("Experiment: %s", cfg["experiment_name"])
     logger.info("CWD: %s | BASE_DIR: %s", os.getcwd(), BASE_DIR)
 
-    # --- Reproducibility ---
     seed = cfg.get("train", {}).get("random_state", 42)
     np.random.seed(seed)
 
-    # --- Run ---
     with mlflow.start_run(run_name="pdm_run") as run:
         logger.info("MLflow run_id=%s", run.info.run_id)
 
-        # Метаданные
         mlflow.log_param("python_version", sys.version.split()[0])
         mlflow.log_param("config_file", str(config_path))
 
-        # 1. Препроцессинг
         df_features = preprocess(config=cfg)
-
         mlflow.log_metric("total_rows", len(df_features))
         mlflow.log_metric("total_features", df_features.shape[1])
 
-        # 2. Group-based split
         test_size = cfg.get("pipeline", {}).get("test_size", 0.2)
         split_seed = cfg.get("pipeline", {}).get("split_seed", seed)
 
-        gss = GroupShuffleSplit(
-            n_splits=1,
-            test_size=test_size,
-            random_state=split_seed,
-        )
-        train_idx, test_idx = next(
-            gss.split(df_features, groups=df_features["machineID"])
-        )
+        gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=split_seed)
+        train_idx, test_idx = next(gss.split(df_features, groups=df_features["machineID"]))
 
         df_train = df_features.iloc[train_idx].copy()
         df_test = df_features.iloc[test_idx].copy()
@@ -166,35 +123,43 @@ def run_pipeline(
         mlflow.log_metric("test_positive_rate", test_pos_rate)
 
         logger.info(
-            "Split | Train: %d rows (%d machines, pos=%.4f) | "
-            "Test: %d rows (%d machines, pos=%.4f)",
+            "Split | Train: %d rows (%d machines, pos=%.4f) | Test: %d rows (%d machines, pos=%.4f)",
             len(df_train), train_machines, train_pos_rate,
             len(df_test), test_machines, test_pos_rate,
         )
 
-        # 3. Обучение
-        #model, best_threshold = train(df_train, config=cfg)
+        model_types = cfg["train"].get("model_types", ["catboost"])
+        use_lstm = "lstm" in model_types
         
-        model, best_threshold, train_meta = train_optuna(
-            df_train,
-            config=cfg,
-            model_types=["catboost", "xgboost", "logreg"],
-            n_trials=30
-        )
+        if use_lstm:
+            logger.info("Выбрана модель LSTM (BiGRU + Focal Loss).")
+            # Теперь train_lstm возвращает 4 элемента
+            model, best_threshold, scaler, train_meta = train_lstm(df_train, config=cfg)
+        else:
+            logger.info("Выбрана модель бустинга.")
+            model, best_threshold, train_meta = train_optuna(df_train, config=cfg)
 
-        # 4. Оценка
-        drop_cols = [c for c in ("target", "machineID", "datetime")
-                     if c in df_test.columns]
-        X_test = df_test.drop(columns=drop_cols)
-        y_test = df_test["target"]
-
-        evaluate(
-            model=model,
-            X_test=X_test,
-            y_test=y_test,
-            config=cfg,
-            best_threshold=best_threshold,
-        )
+        if use_lstm:
+            seq_length = cfg["train"].get("lstm", {}).get("seq_length", 24)
+            evaluate_lstm(
+                model=model,
+                df_test=df_test,
+                config=cfg,
+                best_threshold=best_threshold,
+                seq_length=seq_length,
+                scaler=scaler,  # <--- Передаем scaler
+            )
+        else:
+            drop_cols = [c for c in ("target", "machineID", "datetime") if c in df_test.columns]
+            X_test = df_test.drop(columns=drop_cols)
+            y_test = df_test["target"]
+            evaluate(
+                model=model,
+                X_test=X_test,
+                y_test=y_test,
+                config=cfg,
+                best_threshold=best_threshold,
+            )
 
         mlflow.set_tag("pipeline_status", "completed")
 
