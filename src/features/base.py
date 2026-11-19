@@ -1,20 +1,12 @@
-from __future__ import annotations
-import pandas as pd
 from abc import ABC, abstractmethod
+import pandas as pd
 
 class BaseFeatureBuilder(ABC):
-    """Абстрактный базовый класс для всех генераторов признаков."""
+    """Интерфейс для генераторов фичей."""
+    def __init__(self, time_col: str = 'Timestamp'):
+        self.time_col = time_col
 
     @abstractmethod
-    def prepare_dataset(
-        self,
-        df_telemetry: pd.DataFrame,
-        df_failures: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """Преобразует сырые телеметрию и отказы в датасет с фичами и таргетом."""
-        ...
-
-    @abstractmethod
-    def get_feature_names(self) -> list[str]:
-        """Возвращает список имен сгенерированных признаков."""
-        ...
+    def add_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Добавляет фичи к датафрейму."""
+        pass

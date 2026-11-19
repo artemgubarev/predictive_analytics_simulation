@@ -1,270 +1,41 @@
-from __future__ import annotations
-
-import logging
-import tempfile
-from pathlib import Path
-from typing import Any
-
-import matplotlib.pyplot as plt
 import mlflow
-import numpy as np
 import pandas as pd
-import torch
-import yaml
-from sklearn.metrics import (
-    ConfusionMatrixDisplay,
-    average_precision_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_recall_curve,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
-from torch.utils.data import DataLoader, TensorDataset
 
-from src.lstm_utils import create_sequences
+from src.logger import get_logger
+from src.metrics import compute_regression_metrics
+from src.mlflow_utils import log_json
+from src.preprocessors.base import BasePreprocessor
 
-logger = logging.getLogger(__name__)
+logger = get_logger('evaluate')
 
-def _plot_pr_curve(y_true, y_prob, pr_auc, out_path):
-    precision, recall, _ = precision_recall_curve(y_true, y_prob)
-    baseline = float(y_true.mean())
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(recall, precision, label=f"PR-AUC = {pr_auc:.4f}", linewidth=2)
-    ax.axhline(baseline, linestyle="--", color="grey", label=f"Baseline = {baseline:.4f}")
-    ax.set_xlabel("Recall"); ax.set_ylabel("Precision")
-    ax.set_title("Precision-Recall Curve")
-    ax.legend(); ax.grid(True, alpha=0.3)
-    fig.tight_layout(); fig.savefig(out_path, dpi=120); plt.close(fig)
-
-
-def _plot_confusion_matrix(y_true, y_pred, threshold, out_path):
-    cm = confusion_matrix(y_true, y_pred)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Health", "Failure"])
-    disp.plot(cmap="Blues", values_format="d", ax=ax, colorbar=False)
-    ax.set_title(f"Confusion Matrix (threshold = {threshold:.3f})")
-    fig.tight_layout(); fig.savefig(out_path, dpi=120); plt.close(fig)
-
-
-def _plot_score_distribution(y_true, y_prob, threshold, out_path):
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(y_prob[y_true == 0], bins=50, alpha=0.5,
-            label=f"Health (0), n={int((y_true == 0).sum())}", color="steelblue")
-    ax.hist(y_prob[y_true == 1], bins=50, alpha=0.6,
-            label=f"Failure (1), n={int((y_true == 1).sum())}", color="crimson")
-    ax.axvline(threshold, color="black", linestyle="--", label=f"Threshold = {threshold:.3f}")
-    ax.set_xlabel("Predicted probability"); ax.set_ylabel("Count")
-    ax.set_title("Score Distribution")
-    ax.set_yscale("log")
-    ax.legend(); ax.grid(True, alpha=0.3)
-    fig.tight_layout(); fig.savefig(out_path, dpi=120); plt.close(fig)
-
-
-def _plot_threshold_sweep(y_true, y_prob, best_threshold, out_path):
-    thresholds = np.linspace(0.01, 0.99, 99)
-    precisions, recalls, f1s = [], [], []
-    for thr in thresholds:
-        y_pred = (y_prob > thr).astype(int)
-        precisions.append(precision_score(y_true, y_pred, zero_division=0))
-        recalls.append(recall_score(y_true, y_pred, zero_division=0))
-        f1s.append(f1_score(y_true, y_pred, zero_division=0))
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(thresholds, precisions, label="Precision")
-    ax.plot(thresholds, recalls, label="Recall")
-    ax.plot(thresholds, f1s, label="F1", linewidth=2)
-    ax.axvline(best_threshold, color="black", linestyle="--", label=f"Current = {best_threshold:.3f}")
-    ax.set_xlabel("Threshold"); ax.set_ylabel("Score")
-    ax.set_title("Metrics vs. Threshold")
-    ax.legend(); ax.grid(True, alpha=0.3)
-    fig.tight_layout(); fig.savefig(out_path, dpi=120); plt.close(fig)
-
-
-def _log_classification_report(y_true, y_pred, out_dir: Path) -> dict:
-    target_names = ["Health (0)", "Failure (1)"]
-    report_text = classification_report(y_true, y_pred, target_names=target_names, digits=4, zero_division=0)
-    logger.info("Classification Report:\n%s", report_text)
-
-    report_dict = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
-
-    txt_path = out_dir / "classification_report.txt"
-    txt_path.write_text(report_text, encoding="utf-8")
-
-    report_df = pd.DataFrame(report_dict).T
-    csv_path = out_dir / "classification_report.csv"
-    report_df.to_csv(csv_path)
-
-    for class_name in target_names:
-        class_key = class_name.split()[0].lower()
-        metrics = report_dict[class_name]
-        mlflow.log_metric(f"test_{class_key}_precision", metrics["precision"])
-        mlflow.log_metric(f"test_{class_key}_recall", metrics["recall"])
-        mlflow.log_metric(f"test_{class_key}_f1", metrics["f1-score"])
-        mlflow.log_metric(f"test_{class_key}_support", metrics["support"])
-
-    mlflow.log_metric("test_macro_avg_f1", report_dict["macro avg"]["f1-score"])
-    mlflow.log_metric("test_weighted_avg_f1", report_dict["weighted avg"]["f1-score"])
-    mlflow.log_metric("test_accuracy", report_dict["accuracy"])
-
-    return report_dict
-
-
-def _save_evaluation_artifacts(metrics, y_true, y_prob, y_pred, best_threshold, config, out_dir):
-    _plot_pr_curve(y_true, y_prob, metrics["pr_auc"], out_dir / "pr_curve.png")
-    _plot_confusion_matrix(y_true, y_pred, best_threshold, out_dir / "confusion_matrix.png")
-    _plot_score_distribution(y_true, y_prob, best_threshold, out_dir / "score_distribution.png")
-    _plot_threshold_sweep(y_true, y_prob, best_threshold, out_dir / "threshold_sweep.png")
-
-    report_dict = _log_classification_report(y_true, y_pred, out_dir)
-    metrics["classification_report"] = report_dict
-
-    config_out = {
-        **config,
-        "evaluation": {
-            "best_threshold": float(best_threshold),
-            "test_metrics": {k: v for k, v in metrics.items() if k != "classification_report"},
-            "test_size": len(y_true),
-            "test_positives": int((y_true == 1).sum()),
-            "test_negatives": int((y_true == 0).sum()),
-        },
-    }
-    with open(out_dir / "config.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump(config_out, f, sort_keys=False, allow_unicode=True)
-
-
-def evaluate(
-    model: Any,
-    X_test: pd.DataFrame,
-    y_test: pd.Series,
-    config: dict,
-    best_threshold: float = 0.5,
-) -> dict:
-    logger.info("=== Evaluate started ===")
-
-    if len(X_test) != len(y_test):
-        raise ValueError(f"Длины X_test ({len(X_test)}) и y_test ({len(y_test)}) не совпадают.")
-
-    y_test = y_test.astype(int).reset_index(drop=True)
-    X_test = X_test.reset_index(drop=True)
-
-    n_pos = int((y_test == 1).sum())
-    n_neg = int((y_test == 0).sum())
-    if n_pos == 0 or n_neg == 0:
-        logger.warning("В тесте только один класс (pos=%d, neg=%d).", n_pos, n_neg)
-
-    logger.info("Test size: %d | positives: %d (%.4f) | negatives: %d",
-                len(y_test), n_pos, n_pos / len(y_test), n_neg)
-
-    y_prob = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_prob > best_threshold).astype(int)
-
-    metrics = {
-        "pr_auc": float(average_precision_score(y_test, y_prob)),
-        "f1": float(f1_score(y_test, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_test, y_pred, zero_division=0)),
-        "precision": float(precision_score(y_test, y_pred, zero_division=0)),
-        "threshold": float(best_threshold),
-    }
-    if n_pos > 0 and n_neg > 0:
-        metrics["roc_auc"] = float(roc_auc_score(y_test, y_prob))
-
-    for name, value in metrics.items():
-        mlflow.log_metric(f"test_{name}", value)
-
-    logger.info("Test | PR-AUC=%.4f | F1=%.4f | Recall=%.4f | Precision=%.4f | thr=%.3f",
-                metrics["pr_auc"], metrics["f1"], metrics["recall"], metrics["precision"], metrics["threshold"])
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        logger.info("Сборка артефактов в: %s", tmp)
-        _save_evaluation_artifacts(metrics, y_test, y_prob, y_pred, best_threshold, config, tmp)
-        mlflow.log_artifacts(str(tmp), artifact_path="evaluation_artifacts")
-        logger.info("Артефакты сохранены")
-
-    logger.info("=== Evaluate finished ===")
-    return metrics
-
-
-def evaluate_lstm(
-    model: Any,
+def evaluate_model(
+    model,
+    preprocessor: BasePreprocessor,
     df_test: pd.DataFrame,
     config: dict,
-    best_threshold: float = 0.5,
-    seq_length: int = 24,
-    scaler: Any = None,
+    tag: str = 'test',
 ) -> dict:
-    logger.info("=== Evaluate (BiGRU) started ===")
+    """Evaluates on already-loaded data. Logs to the ACTIVE MLflow run."""
+    X_test, y_test = preprocessor.transform(df_test)
+    preds = model.predict(X_test)
 
-    drop_cols = ["target", "machineID", "datetime"]
-    feature_cols = [c for c in df_test.columns if c not in drop_cols]
+    result_df = preprocessor.clean_and_sort(df_test)
+    result_df['Predicted'] = preds
 
-    X_test_seq, y_test_seq, _ = create_sequences(
-        df_test, feature_cols, target_col="target", seq_length=seq_length
-    )
-    
-    if len(X_test_seq) == 0:
-        logger.warning("Тестовая выборка слишком мала для нарезки окон.")
-        return {}
+    metrics = {}
+    if y_test is not None:
+        result_df['Residual'] = y_test - preds
+        metrics = compute_regression_metrics(y_test, preds)
+        metrics = {f'{tag}_{k}': v for k, v in metrics.items()}
+        logger.info(f'{tag} Metrics: {metrics}')
+        mlflow.log_metrics(metrics)
 
-    n_pos = int((y_test_seq == 1).sum())
-    n_neg = int((y_test_seq == 0).sum())
-    logger.info("Test sequences: %d | positives: %d (%.4f) | negatives: %d",
-                len(y_test_seq), n_pos, n_pos / len(y_test_seq), n_neg)
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        preds_file = Path(tmp) / f'predictions_{tag}.csv'
+        result_df.to_csv(preds_file, index=False)
+        mlflow.log_artifact(str(preds_file), artifact_path='predictions')
 
-    # --- НОРМАЛИЗАЦИЯ ---
-    X_test_reshaped = X_test_seq.reshape(-1, X_test_seq.shape[-1])
-    
-    if scaler is None:
-        logger.warning("Scaler не передан, используется fit_transform на тесте (риск утечки).")
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        X_test_scaled = scaler.fit_transform(X_test_reshaped).reshape(X_test_seq.shape)
-    else:
-        X_test_scaled = scaler.transform(X_test_reshaped).reshape(X_test_seq.shape)
-    # ---------------------
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    model.eval()
-
-    test_dataset = TensorDataset(torch.FloatTensor(X_test_scaled))
-    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
-
-    all_preds = []
-    with torch.no_grad():
-        for (X_batch,) in test_loader:
-            X_batch = X_batch.to(device)
-            logits = model(X_batch)
-            probs = torch.sigmoid(logits)
-            all_preds.extend(probs.cpu().numpy())
-
-    y_prob = np.array(all_preds).flatten()
-    y_pred = (y_prob > best_threshold).astype(int)
-
-    metrics = {
-        "pr_auc": float(average_precision_score(y_test_seq, y_prob)),
-        "f1": float(f1_score(y_test_seq, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_test_seq, y_pred, zero_division=0)),
-        "precision": float(precision_score(y_test_seq, y_pred, zero_division=0)),
-        "threshold": float(best_threshold),
-    }
-    if n_pos > 0 and n_neg > 0:
-        metrics["roc_auc"] = float(roc_auc_score(y_test_seq, y_prob))
-
-    for name, value in metrics.items():
-        mlflow.log_metric(f"test_{name}", value)
-
-    logger.info("Test BiGRU | PR-AUC=%.4f | F1=%.4f | Recall=%.4f | Precision=%.4f | thr=%.3f",
-                metrics["pr_auc"], metrics["f1"], metrics["recall"], metrics["precision"], metrics["threshold"])
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        logger.info("Сборка артефактов в: %s", tmp)
-        _save_evaluation_artifacts(metrics, y_test_seq, y_prob, y_pred, best_threshold, config, tmp)
-        mlflow.log_artifacts(str(tmp), artifact_path="evaluation_artifacts")
-        logger.info("Артефакты сохранены")
-
-    logger.info("=== Evaluate (BiGRU) finished ===")
+    log_json(metrics, f'{tag}_metrics.json', artifact_path='reports')
     return metrics

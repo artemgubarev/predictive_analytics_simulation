@@ -1,40 +1,22 @@
-from __future__ import annotations
-import logging
 import pandas as pd
-from src.features.v1 import EquipmentFeatureBuilderV1
+import numpy as np
+from .v1 import FeatureBuilderV1
 
-logger = logging.getLogger(__name__)
+class FeatureBuilderV2(FeatureBuilderV1):
+    def add_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        data = super().add_features(df) # Сначала берем базовые фичи из v1
+        
+        if self.time_col in data.columns:
+            ts = pd.to_datetime(data[self.time_col])
+            data['Hour_sin'] = np.sin(2 * np.pi * data['Hour'] / 24.0)
+            data['Hour_cos'] = np.cos(2 * np.pi * data['Hour'] / 24.0)
 
-__all__ = ["EquipmentFeatureBuilderV2"]
-
-
-class EquipmentFeatureBuilderV2(EquipmentFeatureBuilderV1):
-    """
-    V2: Наследует всю логику V1 (таргет, очистка, mean/std/max),
-    но добавляет:
-    - Разницу (diff) между текущим значением и скользящим средним
-    - Отношение (ratio) текущего значения к скользящему среднему
-    """
-
-    def _build_rolling_features(
-        self,
-        df_tel: pd.DataFrame,
-        sensor_cols: list[str],
-    ) -> pd.DataFrame:
-        logger.info("Генерация фичей V2 (с diff и ratio)...")
-
-        result = super()._build_rolling_features(df_tel, sensor_cols)
-
-        for w in [self.window_short, self.window_long]:
-            for sensor in sensor_cols:
-                mean_col = f"{sensor}_mean_{w}h"
-                
-                if mean_col in result.columns:
-                    current_vals = df_tel[sensor].values
-                    mean_vals = result[mean_col].values
-                    
-                    result[f"{sensor}_diff_mean_{w}h"] = current_vals - mean_vals
-                    result[f"{sensor}_ratio_mean_{w}h"] = current_vals / (mean_vals + 1e-8)
-
-        logger.debug("Итоговое количество фичей: %d", result.shape[1] - 2) 
-        return result
+        # Физические взаимодействия
+        if 'Temperature' in data.columns:
+            data['Temp_dist_22'] = np.abs(data['Temperature'] - 22.0)
+        if 'Occupancy' in data.columns and 'SquareFootage' in data.columns:
+            data['Occupancy_density'] = data['Occupancy'] / (data['SquareFootage'] + 1.0)
+        if 'RenewableEnergy' in data.columns and 'SquareFootage' in data.columns:
+            data['Renewable_per_sqft'] = data['RenewableEnergy'] / (data['SquareFootage'] + 1.0)
+            
+        return data
