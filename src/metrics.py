@@ -10,5 +10,5 @@ def compute_regression_metrics(y_true, y_pred) -> dict:
         'MAE': round(float(mean_absolute_error(y_true, y_pred)), 4),
         'RMSE': round(float(np.sqrt(mean_squared_error(y_true, y_pred))), 4),
         'R2': round(float(r2_score(y_true, y_pred)), 4),
-        'MAPE_pct': round(mape, 2),
+        'MAPE': round(mape, 2),
     }

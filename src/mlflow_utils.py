@@ -8,16 +8,16 @@ from src.logger import get_logger
 logger = get_logger('mlflow_utils')
 
 
-def run_or_reuse(config: dict, active_run: bool, run_name: str, fn: Callable[[], None]) -> None:
-    """Runs fn() inside a new MLflow run, or reuses the active one."""
-    if active_run:
-        fn()
-        return
+# def run_or_reuse(config: dict, active_run: bool, run_name: str, fn: Callable[[], None]) -> None:
+#     """Runs fn() inside a new MLflow run, or reuses the active one."""
+#     if active_run:
+#         fn()
+#         return
 
-    mlflow.set_tracking_uri(config['experiment']['tracking_uri'])
-    mlflow.set_experiment(config['experiment']['name'])
-    with mlflow.start_run(run_name=run_name):
-        fn()
+#     mlflow.set_tracking_uri(config['experiment']['tracking_uri'])
+#     mlflow.set_experiment(config['experiment']['name'])
+#     with mlflow.start_run(run_name=run_name):
+#         fn()
 
 
 def log_files_to_mlflow(files: Dict[Path, str]) -> None:

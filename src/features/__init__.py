@@ -2,10 +2,12 @@ from typing import Dict, Type
 from .base import BaseFeatureBuilder
 from .v1 import FeatureBuilderV1
 from .v2 import FeatureBuilderV2
+from .v3 import FeatureBuilderV3
 
 FEATURE_REGISTRY: Dict[str, Type[BaseFeatureBuilder]] = {
     'v1': FeatureBuilderV1,
     'v2': FeatureBuilderV2,
+    'v3': FeatureBuilderV3,
 }
 
 def get_feature_extractor(version: str = 'v2', **kwargs) -> BaseFeatureBuilder:

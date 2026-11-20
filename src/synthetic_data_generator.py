@@ -6,7 +6,6 @@ import pandas as pd
 from sdv.metadata import Metadata
 from sdv.single_table import GaussianCopulaSynthesizer
 
-
 class EnergySyntheticGenerator:
     """Hybrid synthetic data generator for energy consumption (GaussianCopula + CatBoost)."""
 

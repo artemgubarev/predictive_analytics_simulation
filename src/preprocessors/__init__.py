@@ -1,10 +1,8 @@
-from src.features.v1 import FeatureBuilderV1
-from src.features.v2 import FeatureBuilderV2
+from src.features import get_feature_extractor
 from .catboost import CatBoostPreprocessor
 
-FEATURE_VERSIONS = {
-    'v1': FeatureBuilderV1,
-    'v2': FeatureBuilderV2,
+MODEL_PREPROCESSORS = {
+    'catboost': CatBoostPreprocessor,
 }
 
 def get_preprocessor(
@@ -13,12 +11,11 @@ def get_preprocessor(
     target_col: str = 'EnergyConsumption', 
     time_col: str = 'Timestamp'
 ):
-    if feature_version not in FEATURE_VERSIONS:
-        raise ValueError(f"Unknown feature version: {feature_version}")
-        
-    builder = FEATURE_VERSIONS[feature_version](time_col=time_col)
+    if model_family not in MODEL_PREPROCESSORS:
+        raise ValueError(f"Unknown model family: {model_family}")
+
+    # Делегируем создание и проверку версии фичей модулю features
+    builder = get_feature_extractor(version=feature_version, time_col=time_col)
     
-    if model_family == 'catboost':
-        return CatBoostPreprocessor(feature_builder=builder, target_col=target_col, time_col=time_col)
-        
-    raise ValueError(f"Unknown model family: {model_family}")
+    preprocessor_cls = MODEL_PREPROCESSORS[model_family]
+    return preprocessor_cls(feature_builder=builder, target_col=target_col, time_col=time_col)

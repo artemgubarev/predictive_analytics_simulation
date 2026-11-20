@@ -20,6 +20,8 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         self._num_medians: dict[str, float] = {}
 
     def clean_and_sort(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean column names, deduplicate by timestamp, and sort chronologically."""
+        
         data = df.copy()
         data.columns = data.columns.str.strip()
         if self.time_col in data.columns:
@@ -30,6 +32,8 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         return data
 
     def _impute_and_cast(self, X: pd.DataFrame, fit: bool) -> pd.DataFrame:
+        """Impute missing values and cast feature types without data leakage."""
+        
         cat_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
         num_cols = X.select_dtypes(include=['number']).columns.tolist()
 
@@ -45,7 +49,7 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
 
     def _prepare_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray | None]:
         data = self.feature_builder.add_features(self.clean_and_sort(df))
-        # Удаляем время и таргет
+        # delete time and target
         cols_to_drop = [c for c in [self.time_col, self.target_col] if c in data.columns]
         X = data.drop(columns=cols_to_drop)
         y = data[self.target_col].values if self.target_col in data.columns else None

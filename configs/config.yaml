@@ -1,5 +1,5 @@
 experiment:
-  name: "pred_experiment"
+  name: "energy_consumption_forecast"
   tracking_uri: "file:mlruns"
   random_seed: 42
 
@@ -11,7 +11,7 @@ data:
   val_ratio: 0.2
 
 features:
-  version: "v2"
+  version: "v3"
 
 model:
   name: "catboost"
